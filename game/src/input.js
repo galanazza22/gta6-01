@@ -1,53 +1,96 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// Keyboard + mouse input with pointer lock. The game reads keys by code
+// (KeyW, Space, KeyE ...) so layouts do not matter, and accumulates mouse
+// deltas for the third-person camera.
+export class Input {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.keys = new Set();
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    this.mouseDown = false;
+    this.clicked = false;
+    this.locked = false;
+    this.onKey = null; // (code) => void, for one-shot keys like E / R / P
+    this.onClick = null; // () => void, fired on a mouse press while locked
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
+    window.addEventListener('keydown', (event) => {
+      if (event.repeat) return;
+      this.keys.add(event.code);
+      if (this.onKey) this.onKey(event.code);
+      if (event.code === 'Space') event.preventDefault();
+    });
+    window.addEventListener('keyup', (event) => {
+      this.keys.delete(event.code);
+    });
+    window.addEventListener('blur', () => this.keys.clear());
+    document.addEventListener('pointerlockchange', () => {
+      this.locked = document.pointerLockElement === this.canvas;
+    });
+    document.addEventListener('mousemove', (event) => {
+      if (!this.locked) return;
+      this.mouseDX += event.movementX || 0;
+      this.mouseDY += event.movementY || 0;
+    });
+    document.addEventListener('mousedown', (event) => {
+      if (event.button !== 0) return;
+      this.mouseDown = true;
+      this.clicked = true;
+      if (this.locked && this.onClick) this.onClick();
+    });
+    document.addEventListener('mouseup', (event) => {
+      if (event.button === 0) this.mouseDown = false;
+    });
+  }
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+  down(code) {
+    return this.keys.has(code);
+  }
 
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
+  // Forward held this frame: W or ArrowUp.
+  forward() {
+    return this.down('KeyW') || this.down('ArrowUp');
+  }
 
-  window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
+  back() {
+    return this.down('KeyS') || this.down('ArrowDown');
+  }
 
-  return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
-    },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
-    },
-  };
+  left() {
+    return this.down('KeyA') || this.down('ArrowLeft');
+  }
+
+  right() {
+    return this.down('KeyD') || this.down('ArrowRight');
+  }
+
+  // Consume the accumulated mouse movement since the last frame.
+  takeMouse() {
+    const dx = this.mouseDX;
+    const dy = this.mouseDY;
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    return { dx, dy };
+  }
+
+  takeClick() {
+    const was = this.clicked;
+    this.clicked = false;
+    return was;
+  }
+
+  lock() {
+    try {
+      const p = this.canvas.requestPointerLock();
+      // Headless / gesture-less calls reject asynchronously; swallow it —
+      // the game still plays with keys and the camera falls back to follow.
+      if (p && p.catch) p.catch(() => {});
+    } catch {
+      // Pointer lock can fail in an iframe or headless run; the game still
+      // plays with keys, and the camera falls back to auto-follow.
+    }
+  }
+
+  unlock() {
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
 }
